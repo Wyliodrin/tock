@@ -146,16 +146,19 @@ impl<'a, T: Default> AppliedGrant<'a, T> {
         }
     }
 
-    fn get_if_allocated(grant: &Grant<T>, process: &'a dyn ProcessType) -> Option<Self> {
+    fn get_if_allocated(
+        grant: &Grant<T>,
+        process: &'a dyn ProcessType,
+    ) -> Result<Self, Option<Error>> {
         process
             .get_grant_ptr(grant.grant_num)
-            .and_then(|grant_ptr| {
+            .map_or(Err(None), |grant_ptr| {
                 if grant_ptr.is_null() {
-                    None
+                    Err(None)
                 } else if grant_ptr == (!0 as *mut u8) {
-                    None
+                    Err(Some(Error::AlreadyInUse))
                 } else {
-                    Some(AppliedGrant {
+                    Ok(AppliedGrant {
                         process: process,
                         grant_num: grant.grant_num,
                         grant: unsafe { &mut *(grant_ptr as *mut T) },
@@ -212,6 +215,9 @@ impl<T: Default> Grant<T> {
             })
     }
 
+    /// Call a function on every active grant region.
+    /// Calling this function when a grant region is currently entered
+    /// will lead to a panic.
     pub fn each<F>(&self, fun: F)
     where
         F: Fn(&mut Borrowed<T>),
@@ -223,10 +229,24 @@ impl<T: Default> Grant<T> {
 
     /// Get an iterator over all processes and their active grant regions for
     /// this particular grant.
+    /// Calling this function when a grant region is currently entered
+    /// will lead to a panic.
     pub fn iter(&self) -> Iter<T> {
         Iter {
             grant: self,
             subiter: self.kernel.get_process_iter(),
+            skips_allowed: false,
+        }
+    }
+
+    /// Get an iterator over all processes and their active grant regions for
+    /// this particular grant, except grant regions that are already currently
+    /// entered.
+    pub fn iter_unenterted_regions(&self) -> Iter<T> {
+        Iter {
+            grant: self,
+            subiter: self.kernel.get_process_iter(),
+            skips_allowed: true,
         }
     }
 }
@@ -237,6 +257,7 @@ pub struct Iter<'a, T: 'a + Default> {
         core::slice::Iter<'a, Option<&'static dyn ProcessType>>,
         fn(&Option<&'static dyn ProcessType>) -> Option<&'static dyn ProcessType>,
     >,
+    skips_allowed: bool,
 }
 
 impl<'a, T: Default> Iterator for Iter<'a, T> {
@@ -247,7 +268,19 @@ impl<'a, T: Default> Iterator for Iter<'a, T> {
         // Get the next `AppId` from the kernel processes array that is setup to use this grant.
         // Since the iterator itself is saved calling this function
         // again will start where we left off.
-        self.subiter
-            .find_map(|process| AppliedGrant::get_if_allocated(grant, process))
+        let skips_allowed = self.skips_allowed;
+        self.subiter.find_map(
+            |process| match AppliedGrant::get_if_allocated(grant, process) {
+                Ok(ag) => Some(ag),
+                Err(None) => None,
+                Err(Some(_err)) => {
+                    if skips_allowed {
+                        None
+                    } else {
+                        panic!("Attempted to re-enter a grant region.")
+                    }
+                }
+            },
+        )
     }
 }
