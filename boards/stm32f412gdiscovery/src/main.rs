@@ -123,6 +123,7 @@ unsafe fn set_pin_primary_functions(
     exti: &stm32f412g::exti::Exti,
     i2c1: &stm32f412g::i2c::I2C,
     gpio_ports: &'static stm32f412g::gpio::GpioPorts<'static>,
+    can1: &'static stm32f412g::can::Can<'static>,
 ) {
     use kernel::hil::gpio::Configure;
     use stm32f412g::exti::LineId;
@@ -336,6 +337,10 @@ unsafe fn set_pin_primary_functions(
     gpio_ports.get_pin(PinId::PG04).map(|pin| {
         pin.make_input();
     });
+
+    // CAN
+    can1.enable_clock();
+    can1.enable();
 }
 
 /// Helper function for miscellaneous peripheral functions
@@ -394,6 +399,7 @@ pub unsafe fn reset_handler() {
         &base_peripherals.exti,
         &base_peripherals.i2c1,
         &base_peripherals.gpio_ports,
+        &base_peripherals.can1,
     );
 
     setup_dma(
